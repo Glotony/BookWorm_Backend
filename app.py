@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify, redirect, url_for,send_from_directory
+from flask import Flask, request, send_file, jsonify, redirect, session, url_for,send_from_directory
 from flask_cors import CORS
 from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
@@ -208,11 +208,16 @@ def api_login():
 
 
 @app.route("/api/logout", methods=["POST"])
-def api_logout():
-    response = jsonify({"message": "Logged out!"})
-    response.set_cookie("token", "", expires=0)
-    return response
-
+def logout():
+    try:
+        # Clear session or cookie info
+        session.clear()
+        response = jsonify({"message": "Logged out successfully"})
+        # If you're using cookies for auth:
+        response.set_cookie("token", "", expires=0)
+        return response, 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # Dashboard - PDF list
 
 
