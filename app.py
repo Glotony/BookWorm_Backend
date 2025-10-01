@@ -61,11 +61,14 @@ google = oauth.register(
 # ----------------------------
 # JWT Helper
 # ----------------------------
+
+
 def generate_token(user_id):
     return jwt.encode({
         "user_id": str(user_id),
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
     }, app.secret_key, algorithm="HS256")
+
 
 def token_required(f):
     @wraps(f)
@@ -75,7 +78,8 @@ def token_required(f):
             return jsonify({"message": "Token is missing!"}), 401
         try:
             decoded = jwt.decode(token, app.secret_key, algorithms=["HS256"])
-            user = mongo.db.users.find_one({"_id": ObjectId(decoded["user_id"])})
+            user = mongo.db.users.find_one(
+                {"_id": ObjectId(decoded["user_id"])})
             if not user:
                 return jsonify({"message": "User not found!"}), 401
         except jwt.ExpiredSignatureError:
@@ -84,6 +88,7 @@ def token_required(f):
             return jsonify({"message": "Invalid token!"}), 401
         return f(user, *args, **kwargs)
     return decorated
+
 
 def role_required(roles):
     def decorator(f):
@@ -98,6 +103,8 @@ def role_required(roles):
 # ----------------------------
 # Health Check
 # ----------------------------
+
+
 @app.route("/", methods=["GET"])
 def api_root():
     return jsonify({"message": "PDF Manager API is running"}), 200
@@ -105,9 +112,12 @@ def api_root():
 # ----------------------------
 # OAuth Routes
 # ----------------------------
+
+
 @app.route("/api/login/discord")
 def login_discord():
     return discord.authorize_redirect(url_for("callback_discord", _external=True))
+
 
 @app.route("/api/callback/discord")
 def callback_discord():
@@ -131,18 +141,20 @@ def callback_discord():
     response.set_cookie("token", jwt_token, httponly=True, samesite='Lax')
     return response
 
+
 @app.route("/api/login/google")
 def login_google():
     return google.authorize_redirect(url_for("callback_google", _external=True))
+
 
 @app.route("/api/callback/google")
 def callback_google():
     # This gets the token response
     token = google.authorize_access_token()
-    
+
     # Parse id_token with nonce=None if you don't use it
     id_info = google.parse_id_token(token, nonce=None)
-    
+
     email = id_info.get("email")
     user = mongo.db.users.find_one({"email": email})
 
@@ -166,6 +178,8 @@ def callback_google():
 # ----------------------------
 # Registration / Login / Logout
 # ----------------------------
+
+
 @app.route("/api/register", methods=["POST"])
 def api_register():
     data = request.json
@@ -185,6 +199,7 @@ def api_register():
     })
     return jsonify({"message": "Registration successful!"}), 201
 
+
 @app.route("/api/login", methods=["POST"])
 def api_login():
     data = request.json
@@ -199,6 +214,7 @@ def api_login():
     response = jsonify({"message": "Login successful!"})
     response.set_cookie("token", token, httponly=True, samesite='Lax')
     return response
+
 
 @app.route("/api/logout", methods=["POST"])
 def logout():
@@ -216,14 +232,15 @@ def logout():
 @app.route("/api/dashboard", methods=["GET"])
 @token_required
 def api_dashboard(current_user):
-    pdfs = mongo.db.pdfs.find({})
-    pdfs_list = [{
-        "filename": pdf["filename"],
-        "original_filename": pdf["original_filename"],
-        "id": str(pdf["_id"]),
-        "uploaded_by": pdf.get("user_id")
-    } for pdf in pdfs]
-    return jsonify({"user": current_user, "pdfs": pdfs_list})
+        pdfs = mongo.db.pdfs.find({})
+        pdfs_list = [{
+            "filename": pdf["filename"],
+            "original_filename": pdf["original_filename"],
+            "id": str(pdf["_id"]),
+            "uploaded_by": pdf.get("user_id")
+        } for pdf in pdfs]
+        return jsonify({"user": current_user, "pdfs": pdfs_list})
+
 
 @app.route("/api/upload", methods=["POST"])
 @token_required
@@ -251,6 +268,7 @@ def upload_pdf(current_user):
         return jsonify({"message": "PDF uploaded to library!", "file_id": unique_id, "filename": file.filename}), 201
     return jsonify({"message": "Only PDFs allowed!"}), 400
 
+
 @app.route("/api/delete/<file_id>", methods=["DELETE"])
 @token_required
 @role_required(["admin", "moderator"])
@@ -266,6 +284,7 @@ def delete_pdf(current_user, file_id):
         return jsonify({"message": "Deleted PDF!"}), 200
     return jsonify({"message": "PDF not found!"}), 404
 
+
 @app.route("/api/download/<file_id>", methods=["GET"])
 @token_required
 def download_pdf(current_user, file_id):
@@ -277,12 +296,16 @@ def download_pdf(current_user, file_id):
 # ----------------------------
 # Books - Global for All Users
 # ----------------------------
+
+
 @app.route("/api/books/finished", methods=["GET"])
 @token_required
 def get_finished_books(current_user):
     books = mongo.db.books.find({"status": "finished"})
-    books_list = [{"title": b["title"], "author": b["author"], "finished_at": b.get("finished_at")} for b in books]
+    books_list = [{"title": b["title"], "author": b["author"],
+                   "finished_at": b.get("finished_at")} for b in books]
     return jsonify(books_list)
+
 
 @app.route("/api/books/borrowed", methods=["GET"])
 @token_required
@@ -290,6 +313,7 @@ def get_borrowed_books(current_user):
     books = mongo.db.books.find({"status": "borrowed"})
     books_list = [{"title": b["title"], "author": b["author"]} for b in books]
     return jsonify(books_list)
+
 
 @app.route("/api/books/add", methods=["POST"])
 @token_required
@@ -309,14 +333,17 @@ def add_book(current_user):
     })
     return jsonify({"message": "Book added!"}), 201
 
+
 # ----------------------------
 # Static Upload Serve
 # ----------------------------
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "uploads")
 
+
 @app.route("/uploads/<path:filename>")
 def serve_file(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
+
 
 # ----------------------------
 # Run App
