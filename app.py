@@ -2,21 +2,22 @@ from flask import Flask, request, send_file, jsonify, redirect, session, url_for
 from flask_cors import CORS
 from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
-from functools import wraps
-from werkzeug.utils import secure_filename
-from werkzeug.security import generate_password_hash, check_password_hash
-from authlib.integrations.flask_client import OAuth
-from dotenv import load_dotenv
 import uuid
 import jwt
 import datetime
 import os
+from functools import wraps
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 import logging
+from authlib.integrations.flask_client import OAuth
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ----------------------------
-# Load .env and Setup
+# Flask Setup
 # ----------------------------
-load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "supersecretkey")
 CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": "*"}})
@@ -26,8 +27,7 @@ CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": "*"}})
 # ----------------------------
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "PdfDb")
 app.config["MONGO_URI"] = f"mongodb://localhost:27017/{MONGO_DB_NAME}"
-# Store uploads **outside project root** for security
-app.config["UPLOAD_FOLDER"] = os.path.join(os.getcwd(), "..", "uploads_secure")
+app.config["UPLOAD_FOLDER"] = os.getenv("UPLOAD_FOLDER", "UPLOADS")
 if not os.path.exists(app.config["UPLOAD_FOLDER"]):
     os.makedirs(app.config["UPLOAD_FOLDER"])
 
@@ -38,6 +38,7 @@ mongo = PyMongo(app)
 # ----------------------------
 oauth = OAuth(app)
 
+# Discord OAuth
 discord = oauth.register(
     name='discord',
     client_id=os.getenv("DISCORD_CLIENT_ID"),
@@ -48,6 +49,7 @@ discord = oauth.register(
     client_kwargs={'scope': 'identify email'}
 )
 
+# Google OAuth with OpenID Connect
 google = oauth.register(
     name='google',
     client_id=os.getenv("GOOGLE_CLIENT_ID"),
@@ -57,12 +59,11 @@ google = oauth.register(
 )
 
 # ----------------------------
-# JWT Helper Functions
+# JWT Helper
 # ----------------------------
 
 
 def generate_token(user_id):
-    """Generate short-lived JWT token"""
     return jwt.encode({
         "user_id": str(user_id),
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
@@ -70,7 +71,6 @@ def generate_token(user_id):
 
 
 def token_required(f):
-    """Ensure user is authenticated"""
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.cookies.get("token")
@@ -91,7 +91,6 @@ def token_required(f):
 
 
 def role_required(roles):
-    """Ensure user has specific role(s)"""
     def decorator(f):
         @wraps(f)
         def decorated(user, *args, **kwargs):
@@ -102,12 +101,12 @@ def role_required(roles):
     return decorator
 
 # ----------------------------
-# Base Route
+# Health Check
 # ----------------------------
 
 
 @app.route("/", methods=["GET"])
-def root():
+def api_root():
     return jsonify({"message": "PDF Manager API is running"}), 200
 
 # ----------------------------
@@ -125,7 +124,6 @@ def callback_discord():
     token = discord.authorize_access_token()
     userinfo = discord.get("users/@me").json()
     email = userinfo.get("email") or f"{userinfo['id']}@discord.local"
-
     user = mongo.db.users.find_one({"email": email})
     if not user:
         user = {
@@ -138,7 +136,6 @@ def callback_discord():
         }
         mongo.db.users.insert_one(user)
         user = mongo.db.users.find_one({"email": email})
-
     jwt_token = generate_token(user["_id"])
     response = redirect(f'{os.getenv("FRONTEND_URL", "/")}/dashboard.html')
     response.set_cookie("token", jwt_token, httponly=True, samesite='Lax')
@@ -152,11 +149,15 @@ def login_google():
 
 @app.route("/api/callback/google")
 def callback_google():
+    # This gets the token response
     token = google.authorize_access_token()
-    id_info = google.parse_id_token(token, nonce=None)
-    email = id_info.get("email")
 
+    # Parse id_token with nonce=None if you don't use it
+    id_info = google.parse_id_token(token, nonce=None)
+
+    email = id_info.get("email")
     user = mongo.db.users.find_one({"email": email})
+
     if not user:
         user = {
             "name": id_info.get("name"),
@@ -175,20 +176,20 @@ def callback_google():
     return response
 
 # ----------------------------
-# Auth: Register / Login / Logout
+# Registration / Login / Logout
 # ----------------------------
 
 
 @app.route("/api/register", methods=["POST"])
-def register_user():
+def api_register():
     data = request.json
-    name, email, password = data.get("name"), data.get(
-        "email"), data.get("password")
+    name = data.get("name")
+    email = data.get("email")
+    password = data.get("password")
     if not name or not email or not password:
         return jsonify({"message": "Name, email, and password are required!"}), 400
     if mongo.db.users.find_one({"email": email}):
         return jsonify({"message": "Email already exists!"}), 400
-
     hashed_password = generate_password_hash(password)
     mongo.db.users.insert_one({
         "name": name,
@@ -200,16 +201,15 @@ def register_user():
 
 
 @app.route("/api/login", methods=["POST"])
-def login_user():
+def api_login():
     data = request.json
-    email, password = data.get("email"), data.get("password")
+    email = data.get("email")
+    password = data.get("password")
     if not email or not password:
-        return jsonify({"message": "Email and password required"}), 400
-
+        return jsonify({"message": "Email and password are required."}), 400
     user = mongo.db.users.find_one({"email": email})
     if not user or not check_password_hash(user.get("password", ""), password):
         return jsonify({"message": "Invalid credentials!"}), 401
-
     token = generate_token(user["_id"])
     response = jsonify({"message": "Login successful!"})
     response.set_cookie("token", token, httponly=True, samesite='Lax')
@@ -217,135 +217,114 @@ def login_user():
 
 
 @app.route("/api/logout", methods=["POST"])
-def logout_user():
+def logout():
     try:
         session.clear()
         response = jsonify({"message": "Logged out successfully"})
         response.set_cookie("token", "", expires=0)
-        return response
+        return response, 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # ----------------------------
-# USER ROUTES
+# PDF Library - Global for All Users
 # ----------------------------
-
-
-@app.route("/api/user/dashboard", methods=["GET"])
+@app.route("/api/dashboard", methods=["GET"])
 @token_required
-def user_dashboard(current_user):
-    pdfs = mongo.db.pdfs.find({})
-    pdfs_list = [{
-        "filename": pdf["filename"],
-        "original_filename": pdf["original_filename"],
-        "id": str(pdf["_id"]),
-        "uploaded_by": pdf.get("user_id")
-    } for pdf in pdfs]
-    return jsonify({"user": current_user, "pdfs": pdfs_list})
+def api_dashboard(current_user):
+        pdfs = mongo.db.pdfs.find({})
+        pdfs_list = [{
+            "filename": pdf["filename"],
+            "original_filename": pdf["original_filename"],
+            "id": str(pdf["_id"]),
+            "uploaded_by": pdf.get("user_id")
+        } for pdf in pdfs]
+        return jsonify({"user": current_user, "pdfs": pdfs_list})
 
 
-@app.route("/api/user/books/finished", methods=["GET"])
+@app.route("/api/upload", methods=["POST"])
 @token_required
-def user_finished_books(current_user):
-    books = mongo.db.books.find({"status": "finished"})
-    return jsonify([{
-        "title": b["title"],
-        "author": b["author"],
-        "finished_at": b.get("finished_at")
-    } for b in books])
+@role_required(["admin", "moderator"])
+def upload_pdf(current_user):
+    if "file" not in request.files:
+        return jsonify({"message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"message": "No selected file"}), 400
+    if file and file.filename.endswith(".pdf"):
+        unique_id = str(uuid.uuid4())
+        ext = os.path.splitext(file.filename)[1]
+        filename = f"{unique_id}{ext}"
+        file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(file_path)
+        mongo.db.pdfs.insert_one({
+            "file_id": unique_id,
+            "original_filename": secure_filename(file.filename),
+            "filename": filename,
+            "path": file_path,
+            "user_id": str(current_user["_id"]),
+            "uploaded_at": datetime.datetime.utcnow()
+        })
+        return jsonify({"message": "PDF uploaded to library!", "file_id": unique_id, "filename": file.filename}), 201
+    return jsonify({"message": "Only PDFs allowed!"}), 400
 
 
-@app.route("/api/user/books/borrowed", methods=["GET"])
+@app.route("/api/delete/<file_id>", methods=["DELETE"])
 @token_required
-def user_borrowed_books(current_user):
-    books = mongo.db.books.find({"status": "borrowed"})
-    return jsonify([{"title": b["title"], "author": b["author"]} for b in books])
+@role_required(["admin", "moderator"])
+def delete_pdf(current_user, file_id):
+    pdf = mongo.db.pdfs.find_one({"file_id": file_id})
+    if pdf:
+        try:
+            if os.path.exists(pdf["path"]):
+                os.remove(pdf["path"])
+        except Exception as e:
+            logging.error(f"File delete error: {e}")
+        mongo.db.pdfs.delete_one({"file_id": file_id})
+        return jsonify({"message": "Deleted PDF!"}), 200
+    return jsonify({"message": "PDF not found!"}), 404
 
 
-@app.route("/api/user/download/<file_id>", methods=["GET"])
+@app.route("/api/download/<file_id>", methods=["GET"])
 @token_required
-def user_download_pdf(current_user, file_id):
+def download_pdf(current_user, file_id):
     pdf = mongo.db.pdfs.find_one({"file_id": file_id})
     if pdf and os.path.exists(pdf["path"]):
         return send_file(pdf["path"], as_attachment=True, download_name=pdf["original_filename"])
     return jsonify({"message": "PDF not found!"}), 404
 
 # ----------------------------
-# ADMIN ROUTES
+# Books - Global for All Users
 # ----------------------------
 
 
-@app.route("/api/admin/upload", methods=["POST"])
+@app.route("/api/books/finished", methods=["GET"])
+@token_required
+def get_finished_books(current_user):
+    books = mongo.db.books.find({"status": "finished"})
+    books_list = [{"title": b["title"], "author": b["author"],
+                   "finished_at": b.get("finished_at")} for b in books]
+    return jsonify(books_list)
+
+
+@app.route("/api/books/borrowed", methods=["GET"])
+@token_required
+def get_borrowed_books(current_user):
+    books = mongo.db.books.find({"status": "borrowed"})
+    books_list = [{"title": b["title"], "author": b["author"]} for b in books]
+    return jsonify(books_list)
+
+
+@app.route("/api/books/add", methods=["POST"])
 @token_required
 @role_required(["admin", "moderator"])
-def admin_upload_pdf(current_user):
-    if "file" not in request.files:
-        return jsonify({"message": "No file provided"}), 400
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"message": "No selected file"}), 400
-    if not file.filename.endswith(".pdf"):
-        return jsonify({"message": "Only PDFs allowed!"}), 400
-
-    unique_id = str(uuid.uuid4())
-    ext = os.path.splitext(file.filename)[1]
-    filename = f"{unique_id}{ext}"
-    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(file_path)
-
-    mongo.db.pdfs.insert_one({
-        "file_id": unique_id,
-        "original_filename": secure_filename(file.filename),
-        "filename": filename,
-        "path": file_path,
-        "user_id": str(current_user["_id"]),
-        "uploaded_at": datetime.datetime.utcnow()
-    })
-    return jsonify({"message": "PDF uploaded!", "file_id": unique_id, "filename": file.filename}), 201
-
-
-@app.route("/api/admin/uploads", methods=["GET"])
-@token_required
-@role_required(["admin", "moderator"])
-def list_uploads(current_user):
-    files = []
-    pdf_records = mongo.db.pdfs.find()
-    for pdf in pdf_records:
-        files.append({
-            "file_id": pdf["file_id"],
-            "filename": pdf["filename"],
-            "original_filename": pdf["original_filename"],
-            # Only protected download route
-            "url": f"/uploads/{pdf['filename']}"
-        })
-    return jsonify(files)
-
-@app.route("/api/admin/delete/<file_id>", methods=["DELETE"])
-@token_required
-@role_required(["admin", "moderator"])
-def admin_delete_pdf(current_user, file_id):
-    pdf = mongo.db.pdfs.find_one({"file_id": file_id})
-    if not pdf:
-        return jsonify({"message": "PDF not found!"}), 404
-    try:
-        if os.path.exists(pdf["path"]):
-            os.remove(pdf["path"])
-    except Exception as e:
-        logging.error(f"File delete error: {e}")
-    mongo.db.pdfs.delete_one({"file_id": file_id})
-    return jsonify({"message": "Deleted PDF!"}), 200
-
-
-@app.route("/api/admin/books/add", methods=["POST"])
-@token_required
-@role_required(["admin", "moderator"])
-def admin_add_book(current_user):
+def add_book(current_user):
     data = request.json
-    title, author, status = data.get("title"), data.get(
-        "author"), data.get("status", "borrowed")
+    title = data.get("title")
+    author = data.get("author")
+    status = data.get("status", "borrowed")
     if not title or not author:
         return jsonify({"message": "Title and author required"}), 400
-
     mongo.db.books.insert_one({
         "title": title,
         "author": author,
@@ -354,22 +333,16 @@ def admin_add_book(current_user):
     })
     return jsonify({"message": "Book added!"}), 201
 
+
 # ----------------------------
-# Static Uploads Serve
+# Static Upload Serve
 # ----------------------------
+UPLOAD_FOLDER = os.path.join(os.getcwd(), "uploads")
 
 
 @app.route("/uploads/<path:filename>")
-@token_required
-@role_required(["admin", "moderator"])
-def serve_file_admin(current_user, filename):
-    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    if not os.path.exists(file_path):
-        return jsonify({"message": "File not found!"}), 404
-    return send_from_directory(app.config["UPLOAD_FOLDER"], filename, as_attachment=True)
-
-
-
+def serve_file(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
 
 
 # ----------------------------
